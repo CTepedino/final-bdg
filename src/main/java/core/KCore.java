@@ -71,7 +71,7 @@ public class KCore {
 
         GraphFrame undirectedGraph = GraphFrame.apply(verticesDF, undirectedEdges);
 
-
+        GraphFrame kcore = computeKCore(undirectedGraph, k);
 
         session.close();
     }
@@ -92,4 +92,42 @@ public class KCore {
         return DataTypes.createStructType(edgeFields);
     }
 
+
+    public static GraphFrame computeKCore(GraphFrame graph, int k) {
+        GraphFrame currentGraph = graph;
+
+        while (true) {
+            // Calcular el grado de los nodos
+            Dataset<Row> degrees = currentGraph.degrees();
+
+            // Filtrar los que cumplen el K
+            Dataset<Row> coreVertices = degrees.filter("degree >= " + k)
+                    .select("id");
+
+            long remaining = coreVertices.count();
+
+            if (remaining == 0) {
+                // No hay K-core
+                return null;
+            }
+
+            // Verificamos si no cambió la cantidad de vértices del grafo anterior
+            if (remaining == currentGraph.vertices().count()) {
+                // Converge → ya es K-core
+                return currentGraph;
+            }
+
+            // Filtrar aristas para que ambos extremos sigan dentro
+            Dataset<Row> newEdges =
+                    currentGraph.edges()
+                            .join(coreVertices.withColumnRenamed("id", "src"), "src")
+                            .join(coreVertices.withColumnRenamed("id", "dst"), "dst");
+
+            Dataset<Row> newVertices =
+                    currentGraph.vertices()
+                            .join(coreVertices, "id");
+
+            currentGraph = GraphFrame.apply(newVertices, newEdges);
+        }
+    }
 }
