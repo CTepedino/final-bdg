@@ -26,7 +26,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.apache.spark.sql.functions.col;
-
 public class KCore {
 
     public static void main(String[] args){
@@ -136,7 +135,11 @@ public class KCore {
                     .select("id");
             long remaining = coreVertices.count();
 
-            if (remaining == currentGraph.vertices().count()) {
+
+            Dataset<Row> missingVertices = currentGraph.vertices()
+                .join(coreVertices, currentGraph.vertices().col("id")
+                .equalTo(coreVertices.col("id")), "leftanti");
+            if (missingVertices.isEmpty()) {
                 return currentGraph;
             }
 
