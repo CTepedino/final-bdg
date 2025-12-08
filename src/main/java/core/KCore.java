@@ -1,6 +1,7 @@
 package core;
 
 import exception.IllegalProgramArgumentException;
+import exception.UnderlyingGraphException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -24,6 +25,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.apache.spark.sql.functions.col;
+
 public class KCore {
 
     public static void main(String[] args){
@@ -41,9 +44,12 @@ public class KCore {
         } catch (NumberFormatException e) {
             throw new IllegalProgramArgumentException("K must be an integer. Provided: " + args[2]);
         }
-
         if (k < 1) {
             throw new IllegalProgramArgumentException("K must be >= 1");
+        }
+        boolean connectedKCore = true;
+        if (args.length > 3){
+            connectedKCore = Boolean.parseBoolean(args[3]);
         }
 
         SparkConf spark = new SparkConf().setAppName("KCore");
@@ -66,8 +72,12 @@ public class KCore {
 
         GraphFrame graph = GraphFrame.apply(verticesDF, undirectedEdgesDF);
 
-        GraphFrame kCore = computeKCore(graph, k);
-
+        GraphFrame kCore;
+        if (connectedKCore){
+            kCore = computeConnectedKCore(graph, k);
+        } else {
+            kCore = computeKCore(graph, k);
+        }
 
         System.out.println(k + "-core vertices:");
         kCore.vertices().show();
@@ -109,7 +119,7 @@ public class KCore {
             .filter("count > 1");
 
         if (!duplicates.isEmpty()) {
-            throw new RuntimeException("El grafo es un multigrafo: existen aristas duplicadas.");
+            throw new UnderlyingGraphException("The underlying non-directed structure is a multigraph");
         }
 
         return undirectedEdgesDF;
@@ -139,6 +149,31 @@ public class KCore {
 
             currentGraph = GraphFrame.apply(remainingVertices, remainingEdges);
         }
+    }
+
+    public static GraphFrame computeConnectedKCore(GraphFrame graph, int k){
+        GraphFrame disconnectedKCore = computeKCore(graph, k);
+
+        Dataset<Row> comps = disconnectedKCore.connectedComponents().run();
+
+        String largestComponent = comps
+            .groupBy("component")
+            .count()
+            .orderBy(functions.desc("count"))
+            .limit(1)
+            .first()
+            .getAs("component");
+
+        Dataset<Row> largestVertices = comps
+            .filter(col("component").equalTo(largestComponent))
+            .select(col("id"));
+
+        Dataset<Row> largestEdges = disconnectedKCore.edges()
+            .join(largestVertices, col("src").equalTo(largestVertices.col("id")))
+            .join(largestVertices, col("dst").equalTo(largestVertices.col("id")))
+            .select("src", "dst");
+
+        return GraphFrame.apply(largestVertices, largestEdges);
     }
 
     public static void saveToHDFS(GraphFrame graph, SparkSession session){
