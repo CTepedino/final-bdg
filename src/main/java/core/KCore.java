@@ -108,7 +108,7 @@ public class KCore {
             .count()
             .filter("count > 1");
 
-        if (duplicates.count() > 0) {
+        if (!duplicates.isEmpty()) {
             throw new RuntimeException("El grafo es un multigrafo: existen aristas duplicadas.");
         }
 
@@ -167,6 +167,8 @@ public class KCore {
                     .csv(tmpNodesDir.toString());
 
             graph.edges()
+                    .withColumnRenamed("src", "idSrc")
+                    .withColumnRenamed("dst", "idDst")
                     .coalesce(1)
                     .write()
                     .option("header", "true")
