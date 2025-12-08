@@ -46,7 +46,7 @@ public class KCore {
         if (k < 1) {
             throw new IllegalProgramArgumentException("K must be >= 1");
         }
-        boolean connectedKCore = true;
+        boolean connectedKCore = false;
         if (args.length > 3){
             connectedKCore = Boolean.parseBoolean(args[3]);
         }
@@ -73,7 +73,6 @@ public class KCore {
 
         GraphFrame kCore;
         if (connectedKCore){
-            session.sparkContext().setCheckpointDir("hdfs:///tmp/checkpoints");
             kCore = computeConnectedKCore(graph, k);
         } else {
             kCore = computeKCore(graph, k);
@@ -134,9 +133,11 @@ public class KCore {
             Dataset<Row> coreVertices = degrees
                     .filter("degree >= " + k)
                     .select("id");
-            long remaining = coreVertices.count();
 
-            if (remaining == currentGraph.vertices().count()) {
+            Dataset<Row> missingVertices = currentGraph.vertices()
+                    .join(coreVertices, currentGraph.vertices().col("id")
+                            .equalTo(coreVertices.col("id")), "leftanti");
+            if (missingVertices.limit(1).count() == 0) {
                 return currentGraph;
             }
 
