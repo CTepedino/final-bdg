@@ -73,6 +73,7 @@ public class KCore {
 
         GraphFrame kCore;
         if (connectedKCore){
+            session.sparkContext().setCheckpointDir("hdfs:///tmp/checkpoints");
             kCore = computeConnectedKCore(graph, k);
         } else {
             kCore = computeKCore(graph, k);
@@ -117,7 +118,7 @@ public class KCore {
             .count()
             .filter("count > 1");
 
-        if (!duplicates.isEmpty()) {
+        if (duplicates.limit(1).count() != 0) {
             throw new UnderlyingGraphException("The underlying non-directed structure is a multigraph");
         }
 
@@ -135,11 +136,7 @@ public class KCore {
                     .select("id");
             long remaining = coreVertices.count();
 
-
-            Dataset<Row> missingVertices = currentGraph.vertices()
-                .join(coreVertices, currentGraph.vertices().col("id")
-                .equalTo(coreVertices.col("id")), "leftanti");
-            if (missingVertices.isEmpty()) {
+            if (remaining == currentGraph.vertices().count()) {
                 return currentGraph;
             }
 
