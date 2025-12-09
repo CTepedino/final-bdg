@@ -16,9 +16,7 @@ import scala.Tuple2;
 import scala.reflect.ClassTag;
 import scala.reflect.ClassTag$;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.text.SimpleDateFormat;
 import java.util.Comparator;
 import java.util.Date;
@@ -195,68 +193,80 @@ public class KCore {
 
         return current; //TODO -> fix largest
     }
-
-    public static Graph<String, String> largestConnectedComponent(Graph<String, String> graph) {
-
-        Graph<Object, String> ccGraph = graph.ops().connectedComponents();
-
-        JavaPairRDD<Object, Long> componentCounts = ccGraph.vertices().toJavaRDD()
-            .mapToPair(v -> new Tuple2<>(v._2(), 1L))
-            .reduceByKey(Long::sum);
-
-        Tuple2<Object, Long> largest = componentCounts
-            .max(Comparator.comparingLong(Tuple2::_2));
-
-        Object mainComponentId = largest._1();
-
-        JavaRDD<Tuple2<Object, String>> filteredVertices = ccGraph.vertices().toJavaRDD()
-            .filter(v -> v._2().equals(mainComponentId))
-            .map(v -> new Tuple2<>(v._1(), graph.vertices().toJavaRDD()
-                .filter(orig -> orig._1().equals(v._1()))
-                .first()._2())
-            );
-
-        JavaRDD<Edge<String>> filteredEdges = graph.edges().toJavaRDD()
-            .filter(e ->
-                    filteredVertices.map(Tuple2::_1).collect().contains(e.srcId()) &&
-                    filteredVertices.map(Tuple2::_1).collect().contains(e.dstId())
-            );
-
-        return Graph.apply(
-                JavaRDD.toRDD(filteredVertices),
-                JavaRDD.toRDD(filteredEdges),
-                "default",
-                StorageLevel.MEMORY_ONLY(),
-                StorageLevel.MEMORY_ONLY(),
-                STRING_TAG,
-                STRING_TAG
-        );
-    }
+//
+//    public static Graph<String, String> largestConnectedComponent(Graph<String, String> graph, JavaSparkContext jsc) {
+//
+//        // 1️⃣ Calcular componentes conectados
+//        Graph<Object, String> ccGraph = graph.ops().connectedComponents();
+//
+//        // 2️⃣ Contar tamaño de cada componente
+//        JavaPairRDD<Object, Long> componentCounts = ccGraph.vertices().toJavaRDD()
+//                .mapToPair(v -> new Tuple2<>(v._2(), 1L))
+//                .reduceByKey(Long::sum);
+//
+//        // 3️⃣ Componente más grande
+//        Tuple2<Object, Long> largest = componentCounts.max(Comparator.comparingLong(Tuple2::_2));
+//        final Object mainComponentId = largest._1(); // final para lambdas
+//
+//        // 4️⃣ Filtrar vertices del componente más grande
+//        JavaPairRDD<Object, String> originalVertices = graph.vertices().toJavaRDD()
+//                .mapToPair(v -> new Tuple2<>(v._1(), v._2()));
+//
+//        JavaPairRDD<Object, Object> componentVertices = ccGraph.vertices().toJavaRDD()
+//                .mapToPair(v -> new Tuple2<>(v._1(), v._2()))
+//                .filter(v -> v._2().equals(mainComponentId));
+//
+//        JavaPairRDD<Object, String> filteredVertices = componentVertices.join(originalVertices)
+//                .mapToPair(v -> new Tuple2<>(v._1(), v._2()._2()));
+//
+//        // 5️⃣ Filtrar aristas completamente dentro del componente usando join con vertices
+//        JavaPairRDD<Object, Object> vertexIdsRDD = filteredVertices.mapToPair(v -> new Tuple2<>(v._1(), null));
+//
+//        JavaRDD<Edge<String>> filteredEdges = graph.edges().toJavaRDD()
+//                .mapToPair(e -> new Tuple2<>(e.srcId(), e))
+//                .join(vertexIdsRDD) // Filtrar srcId
+//                .map(Tuple2::_2)
+//                .map(Tuple2::_1)
+//                .mapToPair(e -> new Tuple2<>(e.dstId(), e))
+//                .join(vertexIdsRDD) // Filtrar dstId
+//                .map(Tuple2::_2)
+//                .map(Tuple2::_1);
+//
+//        // 6️⃣ Construir el subgrafo
+//        return Graph.apply(
+//                JavaRDD.toRDD(filteredVertices),
+//                JavaRDD.toRDD(filteredEdges),
+//                "default",
+//                StorageLevel.MEMORY_ONLY(),
+//                StorageLevel.MEMORY_ONLY(),
+//                STRING_TAG,
+//                STRING_TAG
+//        );
+//    }
 
     public static void saveToHDFS(Graph<String, String> graph, String timestamp, JavaSparkContext jsc) {
         try {
-            String hdfsHome = "hdfs:///user/" + "ctepedino/";//System.getProperty("user.name") + "/";
-
-            String verticesPathStr = hdfsHome + timestamp + "-nodes.csv";
-            String edgesPathStr = hdfsHome + timestamp + "_edges.csv";
-
             Configuration conf = jsc.hadoopConfiguration();
             FileSystem fs = FileSystem.get(new URI("hdfs:///"), conf);
 
-            Path verticesPath = new Path(verticesPathStr);
-            if (fs.exists(verticesPath)) fs.delete(verticesPath, true);
+            Path homePath = fs.getHomeDirectory();
+            System.out.println("HDFS home: " + homePath);
 
-            Path edgesPath = new Path(edgesPathStr);
+            Path verticesPath = new Path(homePath, timestamp + "-nodes.csv");
+            Path edgesPath = new Path(homePath, timestamp + "_edges.csv");
+
+
+            if (fs.exists(verticesPath)) fs.delete(verticesPath, true);
             if (fs.exists(edgesPath)) fs.delete(edgesPath, true);
 
             JavaRDD<String> verticesRDD = graph.vertices().toJavaRDD()
                     .map(v -> v._1 + "," + v._2);
-            verticesRDD.coalesce(1).saveAsTextFile(verticesPathStr);
+            verticesRDD.coalesce(1).saveAsTextFile(verticesPath.toUri().toString());
 
-
+            // Guardar aristas
             JavaRDD<String> edgesRDD = graph.edges().toJavaRDD()
-                    .map(e -> e.srcId() + "," + e.dstId() + "," + e.attr());
-            edgesRDD.coalesce(1).saveAsTextFile(edgesPathStr);
+                    .map(e -> e.srcId() + "," + e.dstId());
+            edgesRDD.coalesce(1).saveAsTextFile(edgesPath.toUri().toString());
         } catch (Exception e) {
             throw new RuntimeException("Error saving graph in HDFS: " + e.getMessage());
         }
