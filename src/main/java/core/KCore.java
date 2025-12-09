@@ -10,24 +10,18 @@ import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.graphx.Edge;
-import org.apache.spark.graphx.EdgeTriplet;
 import org.apache.spark.graphx.Graph;
 import org.apache.spark.graphx.VertexRDD;
 import org.apache.spark.storage.StorageLevel;
-import scala.Serializable;
 import scala.Tuple2;
 import scala.reflect.ClassTag;
 import scala.reflect.ClassTag$;
-import scala.runtime.AbstractFunction1;
-import scala.runtime.AbstractFunction2;
 
 import java.net.URI;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 
 public class KCore {
-    //TODO -> connectedComponents fix
-
     private static final ClassTag<String> STRING_TAG = ClassTag$.MODULE$.apply(String.class);
 
     public static void main(String[] args){
@@ -193,117 +187,56 @@ public class KCore {
             );
         }
 
-        return current; //TODO -> fix largest
+        return largestConnectedComponent(current);
     }
 
     public static Graph<String, String> largestConnectedComponent(Graph<String, String> graph) {
-        Graph<Object, String> ccGraph = graph.ops().connectedComponents();
+        Graph<Object, String> componentsGraph = graph.ops().connectedComponents();
 
-        JavaPairRDD<Object, Long> componentSizes = ccGraph
-                .vertices()
-                .toJavaRDD()
-                .mapToPair(v -> new Tuple2<>(v._2(), 1L))
-                .reduceByKey(Long::sum);
+        JavaPairRDD<Long, Long> memberships = componentsGraph.vertices().toJavaRDD()
+                .mapToPair(v -> new Tuple2<>(((Number) v._1()).longValue(), ((Number) v._2()).longValue()))
+                .persist(StorageLevel.MEMORY_ONLY());
 
-      /*  Object largestComponentId = componentSizes
-                .max((a, b) -> Long.compare(a._2, b._2))
-                ._1;*/
-//        Object largestComponentId = 1L;
-//
-//        JavaPairRDD<Object, String> verticesInLargest = ccGraph.vertices().toJavaRDD()
-//                .filter(v -> v._2().equals(largestComponentId))
-//                .mapToPair(v -> new Tuple2<>(v._1(), 1))
-//                .join(graph.vertices().toJavaRDD().mapToPair(t -> new Tuple2<>(t._1(), t._2())))
-//                .mapToPair(t -> new Tuple2<>(t._1(), t._2()._2()));
+        Tuple2<Long, Long> largestComponent = memberships
+                .mapToPair(t -> new Tuple2<>(t._2, 1L))
+                .reduceByKey(Long::sum)
+                .reduce((a, b) -> a._2 >= b._2 ? a : b);
 
-//        final JavaPairRDD<Object, String> finalVertices = verticesInLargest;
-//        return graph.subgraph(
-//                new EdgeMapper(),
-//                new VertexMapper(finalVertices)
-//        );
+        long largestComponentId = largestComponent._1;
 
-        System.out.println("component sizes");
-        componentSizes.collect().forEach(System.out::println);
+        JavaRDD<Tuple2<Object, String>> verticesRDD = graph.vertices().toJavaRDD()
+                .mapToPair(v -> new Tuple2<>(((Number) v._1()).longValue(), v._2()))
+                .join(memberships)
+                .filter(t -> t._2._2.equals(largestComponentId))
+                .map(t -> new Tuple2<>((Object) t._1, t._2._1));
 
-        return graph;
+        JavaPairRDD<Long, Tuple2<Edge<String>, Long>> edgesWithSrcComp = graph.edges().toJavaRDD()
+                .mapToPair(e -> new Tuple2<>(e.srcId(), e))
+                .join(memberships);
 
+        JavaRDD<Edge<String>> edgesRDD = edgesWithSrcComp
+                .mapToPair(t -> new Tuple2<>(t._2._1.dstId(), new Tuple2<>(t._2._1, t._2._2)))
+                .join(memberships)
+                .filter(t -> {
+                    Tuple2<Edge<String>, Long> edgeAndSrcComp = t._2._1;
+                    Long dstComp = t._2._2;
+                    Long srcComp = edgeAndSrcComp._2;
+                    return srcComp.equals(largestComponentId) && dstComp.equals(largestComponentId);
+                })
+                .map(t -> t._2._1._1);
+
+        memberships.unpersist(false);
+
+        return Graph.apply(
+                JavaRDD.toRDD(verticesRDD),
+                JavaRDD.toRDD(edgesRDD),
+                "default",
+                StorageLevel.MEMORY_ONLY(),
+                StorageLevel.MEMORY_ONLY(),
+                STRING_TAG,
+                STRING_TAG
+        );
     }
-
-    public static class EdgeMapper extends AbstractFunction1<EdgeTriplet<String, String>, Object> implements Serializable {
-        @Override
-        public Object apply(EdgeTriplet<String, String> v1) {
-            return true;
-        }
-    }
-
-    public static class VertexMapper extends AbstractFunction2<Object, String, Object> implements Serializable{
-
-        private final JavaPairRDD<Object, String> finalVertices;
-
-        public VertexMapper(JavaPairRDD<Object, String> finalVertices){
-            this.finalVertices = finalVertices;
-        }
-
-        @Override
-        public Boolean apply(Object id, String attr) {
-            return finalVertices
-                    .map(Tuple2::_1)
-                    .collect()
-                    .contains(id);
-        }
-    }
-
-
-//
-//    public static Graph<String, String> largestConnectedComponent(Graph<String, String> graph, JavaSparkContext jsc) {
-//
-//        // 1️⃣ Calcular componentes conectados
-//        Graph<Object, String> ccGraph = graph.ops().connectedComponents();
-//
-//        // 2️⃣ Contar tamaño de cada componente
-//        JavaPairRDD<Object, Long> componentCounts = ccGraph.vertices().toJavaRDD()
-//                .mapToPair(v -> new Tuple2<>(v._2(), 1L))
-//                .reduceByKey(Long::sum);
-//
-//        // 3️⃣ Componente más grande
-//        Tuple2<Object, Long> largest = componentCounts.max(Comparator.comparingLong(Tuple2::_2));
-//        final Object mainComponentId = largest._1(); // final para lambdas
-//
-//        // 4️⃣ Filtrar vertices del componente más grande
-//        JavaPairRDD<Object, String> originalVertices = graph.vertices().toJavaRDD()
-//                .mapToPair(v -> new Tuple2<>(v._1(), v._2()));
-//
-//        JavaPairRDD<Object, Object> componentVertices = ccGraph.vertices().toJavaRDD()
-//                .mapToPair(v -> new Tuple2<>(v._1(), v._2()))
-//                .filter(v -> v._2().equals(mainComponentId));
-//
-//        JavaPairRDD<Object, String> filteredVertices = componentVertices.join(originalVertices)
-//                .mapToPair(v -> new Tuple2<>(v._1(), v._2()._2()));
-//
-//        // 5️⃣ Filtrar aristas completamente dentro del componente usando join con vertices
-//        JavaPairRDD<Object, Object> vertexIdsRDD = filteredVertices.mapToPair(v -> new Tuple2<>(v._1(), null));
-//
-//        JavaRDD<Edge<String>> filteredEdges = graph.edges().toJavaRDD()
-//                .mapToPair(e -> new Tuple2<>(e.srcId(), e))
-//                .join(vertexIdsRDD) // Filtrar srcId
-//                .map(Tuple2::_2)
-//                .map(Tuple2::_1)
-//                .mapToPair(e -> new Tuple2<>(e.dstId(), e))
-//                .join(vertexIdsRDD) // Filtrar dstId
-//                .map(Tuple2::_2)
-//                .map(Tuple2::_1);
-//
-//        // 6️⃣ Construir el subgrafo
-//        return Graph.apply(
-//                JavaRDD.toRDD(filteredVertices),
-//                JavaRDD.toRDD(filteredEdges),
-//                "default",
-//                StorageLevel.MEMORY_ONLY(),
-//                StorageLevel.MEMORY_ONLY(),
-//                STRING_TAG,
-//                STRING_TAG
-//        );
-//    }
 
     public static void saveToHDFS(Graph<String, String> graph, String timestamp, JavaSparkContext jsc) {
         try {
