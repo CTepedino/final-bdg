@@ -13,6 +13,8 @@ import scala.Tuple2;
 import scala.reflect.ClassTag;
 import scala.reflect.ClassTag$;
 
+import java.util.Comparator;
+
 public class KCore {
 
     private static final ClassTag<String> STRING_TAG = ClassTag$.MODULE$.apply(String.class);
@@ -132,53 +134,88 @@ public class KCore {
         while (true) {
             VertexRDD<Object> degreeRDD = current.ops().degrees();
 
-            JavaPairRDD<Long, Long> validVertices =
-                    degreeRDD.toJavaRDD()
-                            .mapToPair(v -> new Tuple2<>(
-                                    ((Number) v._1()).longValue(),
-                                    ((Number) v._2()).longValue())
-                            )
-                            .filter(v -> v._2 >= k);
+            JavaPairRDD<Long, Long> validVertices = degreeRDD.toJavaRDD()
+                .mapToPair(v -> new Tuple2<>(
+                    ((Number) v._1()).longValue(),
+                    ((Number) v._2()).longValue())
+                )
+                .filter(v -> v._2 >= k);
 
             long remaining = validVertices.count();
             if (remaining == previousRemaining) {
-                return current;
+                break;
             }
             previousRemaining = remaining;
 
 
-            JavaPairRDD<Long, String> currentVertices =
-                    current.vertices().toJavaRDD().mapToPair(v ->
-                            new Tuple2<>(
-                                    ((Number) v._1()).longValue(),
-                                    v._2()
-                            )
-                    );
+            JavaPairRDD<Long, String> currentVertices = current.vertices().toJavaRDD()
+                .mapToPair(v -> new Tuple2<>(
+                    ((Number) v._1()).longValue(),
+                    v._2()
+                ));
 
-            JavaRDD<Tuple2<Object, String>> remainingVerticesRDD =
-                    currentVertices.join(validVertices)
-                            .map(t -> new Tuple2<Object, String>(t._1, t._2._1));
+            JavaRDD<Tuple2<Object, String>> remainingVerticesRDD = currentVertices
+                .join(validVertices)
+                .map(t -> new Tuple2<>(t._1, t._2._1));
 
-            JavaPairRDD<Long, Edge<String>> survivingBySrc =
-                    current.edges().toJavaRDD()
-                            .mapToPair(e -> new Tuple2<>(e.srcId(), e))
-                            .join(validVertices)
-                            .mapToPair(t -> new Tuple2<>(t._2._1.dstId(), t._2._1));
+            JavaPairRDD<Long, Edge<String>> survivingBySrc = current.edges().toJavaRDD()
+                .mapToPair(e -> new Tuple2<>(e.srcId(), e))
+                .join(validVertices)
+                .mapToPair(t -> new Tuple2<>(t._2._1.dstId(), t._2._1));
 
-            JavaRDD<Edge<String>> remainingEdgesRDD =
-                    survivingBySrc.join(validVertices)
-                            .map(t -> t._2._1);
+            JavaRDD<Edge<String>> remainingEdgesRDD = survivingBySrc
+                .join(validVertices)
+                .map(t -> t._2._1);
 
             current = Graph.apply(
-                    JavaRDD.toRDD(remainingVerticesRDD),
-                    JavaRDD.toRDD(remainingEdgesRDD),
-                    "default",
-                    StorageLevel.MEMORY_ONLY(),
-                    StorageLevel.MEMORY_ONLY(),
-                    STRING_TAG,
-                    STRING_TAG
+                JavaRDD.toRDD(remainingVerticesRDD),
+                JavaRDD.toRDD(remainingEdgesRDD),
+                "default",
+                StorageLevel.MEMORY_ONLY(),
+                StorageLevel.MEMORY_ONLY(),
+                STRING_TAG,
+                STRING_TAG
             );
         }
+
+        return largestConnectedComponent(current);
+    }
+
+    public static Graph<String, String> largestConnectedComponent(Graph<String, String> graph) {
+
+        Graph<Object, String> ccGraph = graph.ops().connectedComponents();
+
+        JavaPairRDD<Object, Long> componentCounts = ccGraph.vertices().toJavaRDD()
+            .mapToPair(v -> new Tuple2<>(v._2(), 1L))
+            .reduceByKey(Long::sum);
+
+        Tuple2<Object, Long> largest = componentCounts
+            .max(Comparator.comparingLong(Tuple2::_2));
+
+        Object mainComponentId = largest._1();
+
+        JavaRDD<Tuple2<Object, String>> filteredVertices = ccGraph.vertices().toJavaRDD()
+            .filter(v -> v._2().equals(mainComponentId))
+            .map(v -> new Tuple2<>(v._1(), graph.vertices().toJavaRDD()
+                .filter(orig -> orig._1().equals(v._1()))
+                .first()._2())
+            );
+
+        JavaRDD<Edge<String>> filteredEdges = graph.edges().toJavaRDD()
+            .filter(e ->
+                    filteredVertices.map(Tuple2::_1).collect().contains(e.srcId()) &&
+                    filteredVertices.map(Tuple2::_1).collect().contains(e.dstId())
+            );
+
+        return Graph.apply(
+                JavaRDD.toRDD(filteredVertices),
+                JavaRDD.toRDD(filteredEdges),
+                "default",
+                StorageLevel.MEMORY_ONLY(),
+                StorageLevel.MEMORY_ONLY(),
+                STRING_TAG,
+                STRING_TAG
+        );
     }
 
 }
