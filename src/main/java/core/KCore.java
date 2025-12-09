@@ -2,6 +2,7 @@ package core;
 
 import exception.IllegalProgramArgumentException;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.SparkConf;
@@ -18,12 +19,10 @@ import scala.reflect.ClassTag$;
 
 import java.net.URI;
 import java.text.SimpleDateFormat;
-import java.util.Comparator;
 import java.util.Date;
 
 public class KCore {
     //TODO -> los archivos son directorios
-    //TODO -> home del usuario?
     //TODO -> connectedComponents fix
 
     private static final ClassTag<String> STRING_TAG = ClassTag$.MODULE$.apply(String.class);
@@ -248,27 +247,56 @@ public class KCore {
         try {
             Configuration conf = jsc.hadoopConfiguration();
             FileSystem fs = FileSystem.get(new URI("hdfs:///"), conf);
-
             Path homePath = fs.getHomeDirectory();
-            System.out.println("HDFS home: " + homePath);
 
-            Path verticesPath = new Path(homePath, timestamp + "-nodes.csv");
-            Path edgesPath = new Path(homePath, timestamp + "_edges.csv");
-
-
-            if (fs.exists(verticesPath)) fs.delete(verticesPath, true);
-            if (fs.exists(edgesPath)) fs.delete(edgesPath, true);
-
+            // Vertices
             JavaRDD<String> verticesRDD = graph.vertices().toJavaRDD()
                     .map(v -> v._1 + "," + v._2);
-            verticesRDD.coalesce(1).saveAsTextFile(verticesPath.toUri().toString());
 
-            // Guardar aristas
+            Path verticesTmpPath = new Path(homePath, timestamp + "-nodes-tmp");
+            Path verticesFinalPath = new Path(homePath, timestamp + "-nodes.csv");
+
+            // Borrar si existe
+            if (fs.exists(verticesTmpPath)) fs.delete(verticesTmpPath, true);
+            if (fs.exists(verticesFinalPath)) fs.delete(verticesFinalPath, true);
+
+            // Guardar RDD temporal
+            verticesRDD.coalesce(1).saveAsTextFile(verticesTmpPath.toUri().toString());
+
+            // Renombrar part-00000 a CSV final
+            FileStatus[] vertexFiles = fs.listStatus(verticesTmpPath);
+            for (FileStatus file : vertexFiles) {
+                if (file.getPath().getName().startsWith("part-")) {
+                    fs.rename(file.getPath(), verticesFinalPath);
+                    break;
+                }
+            }
+            fs.delete(verticesTmpPath, true);
+
+            // Edges
             JavaRDD<String> edgesRDD = graph.edges().toJavaRDD()
                     .map(e -> e.srcId() + "," + e.dstId());
-            edgesRDD.coalesce(1).saveAsTextFile(edgesPath.toUri().toString());
+
+            Path edgesTmpPath = new Path(homePath, timestamp + "-edges-tmp");
+            Path edgesFinalPath = new Path(homePath, timestamp + "-edges.csv");
+
+            if (fs.exists(edgesTmpPath)) fs.delete(edgesTmpPath, true);
+            if (fs.exists(edgesFinalPath)) fs.delete(edgesFinalPath, true);
+
+            edgesRDD.coalesce(1).saveAsTextFile(edgesTmpPath.toUri().toString());
+
+            FileStatus[] edgeFiles = fs.listStatus(edgesTmpPath);
+            for (FileStatus file : edgeFiles) {
+                if (file.getPath().getName().startsWith("part-")) {
+                    fs.rename(file.getPath(), edgesFinalPath);
+                    break;
+                }
+            }
+            fs.delete(edgesTmpPath, true);
+
         } catch (Exception e) {
-            throw new RuntimeException("Error saving graph in HDFS: " + e.getMessage());
+            throw new RuntimeException("Error saving graph in HDFS: " + e.getMessage(), e);
         }
     }
+
 }
