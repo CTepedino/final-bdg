@@ -24,6 +24,9 @@ import java.util.Comparator;
 import java.util.Date;
 
 public class KCore {
+    //TODO -> los archivos son directorios
+    //TODO -> home del usuario?
+    //TODO -> connectedComponents fix
 
     private static final ClassTag<String> STRING_TAG = ClassTag$.MODULE$.apply(String.class);
 
@@ -80,7 +83,6 @@ public class KCore {
         kCore.edges().toJavaRDD().collect().forEach(e -> System.out.println("(" + e.srcId() + "," + e.dstId() + ")"));
 
         saveToHDFS(kCore, timestamp, sparkContext);
-
 
         sparkContext.close();
     }
@@ -191,7 +193,7 @@ public class KCore {
             );
         }
 
-        return largestConnectedComponent(current);
+        return current; //TODO -> fix largest
     }
 
     public static Graph<String, String> largestConnectedComponent(Graph<String, String> graph) {
@@ -233,7 +235,7 @@ public class KCore {
 
     public static void saveToHDFS(Graph<String, String> graph, String timestamp, JavaSparkContext jsc) {
         try {
-            String hdfsHome = "hdfs:///user/" + System.getProperty("user.name") + "/";
+            String hdfsHome = "hdfs:///user/" + "ctepedino/";//System.getProperty("user.name") + "/";
 
             String verticesPathStr = hdfsHome + timestamp + "-nodes.csv";
             String edgesPathStr = hdfsHome + timestamp + "_edges.csv";
@@ -256,7 +258,7 @@ public class KCore {
                     .map(e -> e.srcId() + "," + e.dstId() + "," + e.attr());
             edgesRDD.coalesce(1).saveAsTextFile(edgesPathStr);
         } catch (Exception e) {
-            System.err.println("Error saving graph in HDFS: " + e.getMessage());
+            throw new RuntimeException("Error saving graph in HDFS: " + e.getMessage());
         }
     }
 }
