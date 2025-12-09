@@ -6,20 +6,16 @@ import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.graphx.Edge;
-import org.apache.spark.graphx.EdgeDirection;
 import org.apache.spark.graphx.Graph;
 import org.apache.spark.graphx.VertexRDD;
 import org.apache.spark.storage.StorageLevel;
-import scala.Serializable;
 import scala.Tuple2;
 import scala.reflect.ClassTag;
 import scala.reflect.ClassTag$;
 
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Set;
-
 public class KCore {
+
+    private static final ClassTag<String> STRING_TAG = ClassTag$.MODULE$.apply(String.class);
 
     public static void main(String[] args){
         if (args.length < 3) {
@@ -46,16 +42,15 @@ public class KCore {
 
         JavaRDD<Edge<String>> undirectedEdgesRDD = getUndirectedEdges(edgesRDD);
 
-        ClassTag<String> stringTag = ClassTag$.MODULE$.apply(String.class);
-
         Graph<String, String> graph = Graph.apply(
                 verticesRDD.rdd(),
                 undirectedEdgesRDD.rdd(),
                 "default",
                 StorageLevel.MEMORY_ONLY(),
                 StorageLevel.MEMORY_ONLY(),
-                stringTag,
-                stringTag);
+                STRING_TAG,
+                STRING_TAG
+        );
 
         Graph<String, String> kCore = computeKCore(graph, k);
 
@@ -130,85 +125,60 @@ public class KCore {
     }
 
     public static Graph<String, String> computeKCore(Graph<String, String> graph, int k) {
-        Graph<String, String> current = graph;
-        long prevRemaining = current.vertices().count();
 
-        // ClassTag para Graph.apply(...)
-        ClassTag<String> tagString = ClassTag$.MODULE$.apply(String.class);
+        Graph<String, String> current = graph;
+        long previousRemaining = current.vertices().count();
 
         while (true) {
-            // 1) grados por vértice (VertexRDD<Object>)
-            VertexRDD<Object> degrees = current.ops().degrees();
+            VertexRDD<Object> degreeRDD = current.ops().degrees();
 
-            // 2) convertir a JavaPairRDD<Long, Long> (vertexId -> degree) y filtrar degree >= k
-            JavaPairRDD<Long, Long> validVertices = degrees.toJavaRDD()
-                    .mapToPair(t -> {
-                        // t._1() = vertexId (Object), t._2() = degree (Object)
-                        Long vid = ((Number) t._1()).longValue();
-                        Long deg = ((Number) t._2()).longValue();
-                        return new Tuple2<>(vid, deg);
-                    })
-                    .filter(t -> t._2 >= k);
+            JavaPairRDD<Long, Long> validVertices =
+                    degreeRDD.toJavaRDD()
+                            .mapToPair(v -> new Tuple2<>(
+                                    ((Number) v._1()).longValue(),
+                                    ((Number) v._2()).longValue())
+                            )
+                            .filter(v -> v._2 >= k);
 
             long remaining = validVertices.count();
-
-            // condición de convergencia
-            if (remaining == prevRemaining) {
+            if (remaining == previousRemaining) {
                 return current;
             }
-            prevRemaining = remaining;
+            previousRemaining = remaining;
 
-            // 3) remainingVertices: hacer join entre current.vertices() y validVertices (distribuido)
-            // current.vertices().toJavaRDD() produce JavaRDD<Tuple2<Object, String>>
-            JavaPairRDD<Long, String> verticesById = current.vertices().toJavaRDD()
-                    .mapToPair(v -> {
-                        Long vid = ((Number) v._1()).longValue();
-                        String attr = v._2();
-                        return new Tuple2<>(vid, attr);
-                    });
 
-            // join garantiza que nos quedamos sólo con los vértices válidos
-            JavaPairRDD<Long, Tuple2<String, Long>> joinedVerts = verticesById.join(validVertices);
+            JavaPairRDD<Long, String> currentVertices =
+                    current.vertices().toJavaRDD().mapToPair(v ->
+                            new Tuple2<>(
+                                    ((Number) v._1()).longValue(),
+                                    v._2()
+                            )
+                    );
 
-            // mapear de vuelta a JavaRDD<scala.Tuple2<Object, String>> para Graph.apply
-            JavaRDD<scala.Tuple2<Object, String>> remainingVerticesRDD = joinedVerts
-                    .map(t -> new scala.Tuple2<Object, String>(t._1, t._2._1));
+            JavaRDD<Tuple2<Object, String>> remainingVerticesRDD =
+                    currentVertices.join(validVertices)
+                            .map(t -> new Tuple2<Object, String>(t._1, t._2._1));
 
-            // 4) Filtrar edges sin traer IDs al driver: join distribuido por src y luego por dst
-            // edges keyed by src
-            JavaPairRDD<Long, Edge<String>> edgesBySrc = current.edges().toJavaRDD()
-                    .mapToPair(e -> new Tuple2<>(e.srcId(), e));
+            JavaPairRDD<Long, Edge<String>> survivingBySrc =
+                    current.edges().toJavaRDD()
+                            .mapToPair(e -> new Tuple2<>(e.srcId(), e))
+                            .join(validVertices)
+                            .mapToPair(t -> new Tuple2<>(t._2._1.dstId(), t._2._1));
 
-            // aseguramos que src esté en validVertices
-            JavaPairRDD<Long, Tuple2<Edge<String>, Long>> edgesWithValidSrc = edgesBySrc.join(validVertices);
+            JavaRDD<Edge<String>> remainingEdgesRDD =
+                    survivingBySrc.join(validVertices)
+                            .map(t -> t._2._1);
 
-            // obtenemos edges que tienen src válido
-            JavaRDD<Edge<String>> edgesAfterSrcFilter = edgesWithValidSrc
-                    .map(t -> t._2._1); // t._2 = (Edge, degSrc) -> extraigo Edge
-
-            // ahora key por dst y unimos con validVertices para asegurar dst válido
-            JavaPairRDD<Long, Edge<String>> edgesByDst = edgesAfterSrcFilter
-                    .mapToPair(e -> new Tuple2<>(e.dstId(), e));
-
-            JavaPairRDD<Long, Tuple2<Edge<String>, Long>> edgesWithValidDst = edgesByDst.join(validVertices);
-
-            // edges finales que tienen ambos endpoints en el core
-            JavaRDD<Edge<String>> remainingEdgesRDD = edgesWithValidDst
-                    .map(t -> t._2._1); // tomar el Edge
-
-            // 5) reconstruir grafo con los vértices y edges remanentes
             current = Graph.apply(
                     JavaRDD.toRDD(remainingVerticesRDD),
                     JavaRDD.toRDD(remainingEdgesRDD),
-                    "N/A", // default vertex attr
+                    "default",
                     StorageLevel.MEMORY_ONLY(),
                     StorageLevel.MEMORY_ONLY(),
-                    tagString,
-                    tagString
+                    STRING_TAG,
+                    STRING_TAG
             );
-
         }
     }
-
 
 }
