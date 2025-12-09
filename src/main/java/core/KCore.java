@@ -1,6 +1,9 @@
 package core;
 
 import exception.IllegalProgramArgumentException;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
@@ -13,13 +16,20 @@ import scala.Tuple2;
 import scala.reflect.ClassTag;
 import scala.reflect.ClassTag$;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.text.SimpleDateFormat;
 import java.util.Comparator;
+import java.util.Date;
 
 public class KCore {
 
     private static final ClassTag<String> STRING_TAG = ClassTag$.MODULE$.apply(String.class);
 
     public static void main(String[] args){
+        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+
         if (args.length < 3) {
             System.err.println("Usage: KCore <vertices-file> <edges-file> <k-value>");
             System.exit(1);
@@ -56,17 +66,23 @@ public class KCore {
 
         Graph<String, String> kCore = computeKCore(graph, k);
 
-        System.out.println("vertices:");
+        System.out.println(k + "-core graph");
+        System.out.println("\n\n");
+
+        System.out.println("vertices");
+        System.out.println("id,name");
         kCore.vertices().toJavaRDD().collect().forEach(System.out::println);
 
-        System.out.println();
+        System.out.println("\n\n");
 
-        System.out.println("edges:");
-        kCore.edges().toJavaRDD().collect().forEach(System.out::println);
+        System.out.println("edges");
+        System.out.println("idSrc,idDst");
+        kCore.edges().toJavaRDD().collect().forEach(e -> System.out.println("(" + e.srcId() + "," + e.dstId() + ")"));
+
+        saveToHDFS(kCore, timestamp, sparkContext);
 
 
         sparkContext.close();
-
     }
 
     public static JavaRDD<Tuple2<Object, String>> LoadVertices(JavaSparkContext sc, String filePath) {
@@ -117,13 +133,10 @@ public class KCore {
             throw new RuntimeException("The underlying non-directed structure is a multigraph");
         }
 
-
-        JavaRDD<Edge<String>> uniqueEdges = normalizedEdges
+        return normalizedEdges
             .mapToPair(e -> new Tuple2<>(new Tuple2<>(e.srcId(), e.dstId()), e))
             .reduceByKey((a, b) -> a)
             .values();
-
-        return uniqueEdges;
     }
 
     public static Graph<String, String> computeKCore(Graph<String, String> graph, int k) {
@@ -218,4 +231,32 @@ public class KCore {
         );
     }
 
+    public static void saveToHDFS(Graph<String, String> graph, String timestamp, JavaSparkContext jsc) {
+        try {
+            String hdfsHome = "hdfs:///user/" + System.getProperty("user.name") + "/";
+
+            String verticesPathStr = hdfsHome + timestamp + "-nodes.csv";
+            String edgesPathStr = hdfsHome + timestamp + "_edges.csv";
+
+            Configuration conf = jsc.hadoopConfiguration();
+            FileSystem fs = FileSystem.get(new URI("hdfs:///"), conf);
+
+            Path verticesPath = new Path(verticesPathStr);
+            if (fs.exists(verticesPath)) fs.delete(verticesPath, true);
+
+            Path edgesPath = new Path(edgesPathStr);
+            if (fs.exists(edgesPath)) fs.delete(edgesPath, true);
+
+            JavaRDD<String> verticesRDD = graph.vertices().toJavaRDD()
+                    .map(v -> v._1 + "," + v._2);
+            verticesRDD.coalesce(1).saveAsTextFile(verticesPathStr);
+
+
+            JavaRDD<String> edgesRDD = graph.edges().toJavaRDD()
+                    .map(e -> e.srcId() + "," + e.dstId() + "," + e.attr());
+            edgesRDD.coalesce(1).saveAsTextFile(edgesPathStr);
+        } catch (Exception e) {
+            System.err.println("Error saving graph in HDFS: " + e.getMessage());
+        }
+    }
 }
