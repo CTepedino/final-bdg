@@ -10,19 +10,22 @@ import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.graphx.Edge;
+import org.apache.spark.graphx.EdgeTriplet;
 import org.apache.spark.graphx.Graph;
 import org.apache.spark.graphx.VertexRDD;
 import org.apache.spark.storage.StorageLevel;
+import scala.Serializable;
 import scala.Tuple2;
 import scala.reflect.ClassTag;
 import scala.reflect.ClassTag$;
+import scala.runtime.AbstractFunction1;
+import scala.runtime.AbstractFunction2;
 
 import java.net.URI;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 
 public class KCore {
-    //TODO -> los archivos son directorios
     //TODO -> connectedComponents fix
 
     private static final ClassTag<String> STRING_TAG = ClassTag$.MODULE$.apply(String.class);
@@ -192,6 +195,65 @@ public class KCore {
 
         return current; //TODO -> fix largest
     }
+
+    public static Graph<String, String> largestConnectedComponent(Graph<String, String> graph) {
+        Graph<Object, String> ccGraph = graph.ops().connectedComponents();
+
+        JavaPairRDD<Object, Long> componentSizes = ccGraph
+                .vertices()
+                .toJavaRDD()
+                .mapToPair(v -> new Tuple2<>(v._2(), 1L))
+                .reduceByKey(Long::sum);
+
+      /*  Object largestComponentId = componentSizes
+                .max((a, b) -> Long.compare(a._2, b._2))
+                ._1;*/
+//        Object largestComponentId = 1L;
+//
+//        JavaPairRDD<Object, String> verticesInLargest = ccGraph.vertices().toJavaRDD()
+//                .filter(v -> v._2().equals(largestComponentId))
+//                .mapToPair(v -> new Tuple2<>(v._1(), 1))
+//                .join(graph.vertices().toJavaRDD().mapToPair(t -> new Tuple2<>(t._1(), t._2())))
+//                .mapToPair(t -> new Tuple2<>(t._1(), t._2()._2()));
+
+//        final JavaPairRDD<Object, String> finalVertices = verticesInLargest;
+//        return graph.subgraph(
+//                new EdgeMapper(),
+//                new VertexMapper(finalVertices)
+//        );
+
+        System.out.println("component sizes");
+        componentSizes.collect().forEach(System.out::println);
+
+        return graph;
+
+    }
+
+    public static class EdgeMapper extends AbstractFunction1<EdgeTriplet<String, String>, Object> implements Serializable {
+        @Override
+        public Object apply(EdgeTriplet<String, String> v1) {
+            return true;
+        }
+    }
+
+    public static class VertexMapper extends AbstractFunction2<Object, String, Object> implements Serializable{
+
+        private final JavaPairRDD<Object, String> finalVertices;
+
+        public VertexMapper(JavaPairRDD<Object, String> finalVertices){
+            this.finalVertices = finalVertices;
+        }
+
+        @Override
+        public Boolean apply(Object id, String attr) {
+            return finalVertices
+                    .map(Tuple2::_1)
+                    .collect()
+                    .contains(id);
+        }
+    }
+
+
 //
 //    public static Graph<String, String> largestConnectedComponent(Graph<String, String> graph, JavaSparkContext jsc) {
 //
@@ -249,21 +311,18 @@ public class KCore {
             FileSystem fs = FileSystem.get(new URI("hdfs:///"), conf);
             Path homePath = fs.getHomeDirectory();
 
-            // Vertices
+
             JavaRDD<String> verticesRDD = graph.vertices().toJavaRDD()
                     .map(v -> v._1 + "," + v._2);
 
             Path verticesTmpPath = new Path(homePath, timestamp + "-nodes-tmp");
             Path verticesFinalPath = new Path(homePath, timestamp + "-nodes.csv");
 
-            // Borrar si existe
             if (fs.exists(verticesTmpPath)) fs.delete(verticesTmpPath, true);
             if (fs.exists(verticesFinalPath)) fs.delete(verticesFinalPath, true);
 
-            // Guardar RDD temporal
             verticesRDD.coalesce(1).saveAsTextFile(verticesTmpPath.toUri().toString());
 
-            // Renombrar part-00000 a CSV final
             FileStatus[] vertexFiles = fs.listStatus(verticesTmpPath);
             for (FileStatus file : vertexFiles) {
                 if (file.getPath().getName().startsWith("part-")) {
@@ -273,7 +332,6 @@ public class KCore {
             }
             fs.delete(verticesTmpPath, true);
 
-            // Edges
             JavaRDD<String> edgesRDD = graph.edges().toJavaRDD()
                     .map(e -> e.srcId() + "," + e.dstId());
 
