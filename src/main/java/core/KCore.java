@@ -194,8 +194,8 @@ public class KCore {
         Graph<Object, String> componentsGraph = graph.ops().connectedComponents();
 
         JavaPairRDD<Long, Long> memberships = componentsGraph.vertices().toJavaRDD()
-                .mapToPair(v -> new Tuple2<>(((Number) v._1()).longValue(), ((Number) v._2()).longValue()))
-                .persist(StorageLevel.MEMORY_ONLY());
+                .mapToPair(v -> new Tuple2<>(((Number) v._1()).longValue(), ((Number) v._2()).longValue()));
+
 
         Tuple2<Long, Long> largestComponent = memberships
                 .mapToPair(t -> new Tuple2<>(t._2, 1L))
@@ -224,8 +224,6 @@ public class KCore {
                     return srcComp.equals(largestComponentId) && dstComp.equals(largestComponentId);
                 })
                 .map(t -> t._2._1._1);
-
-        memberships.unpersist(false);
 
         return Graph.apply(
                 JavaRDD.toRDD(verticesRDD),
