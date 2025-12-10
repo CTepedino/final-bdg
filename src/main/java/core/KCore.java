@@ -129,10 +129,7 @@ public class KCore {
             throw new RuntimeException("The underlying non-directed structure is a multigraph");
         }
 
-        return normalizedEdges
-            .mapToPair(e -> new Tuple2<>(new Tuple2<>(e.srcId(), e.dstId()), e))
-            .reduceByKey((a, b) -> a)
-            .values();
+        return normalizedEdges;
     }
 
     public static Graph<String, String> computeKCore(Graph<String, String> graph, int k) {
