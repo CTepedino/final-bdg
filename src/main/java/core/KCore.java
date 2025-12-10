@@ -156,24 +156,19 @@ public class KCore {
             }
             previousRemaining = remaining;
 
-
-            JavaPairRDD<Long, String> currentVertices = current.vertices().toJavaRDD()
-                .mapToPair(v -> new Tuple2<>(
-                    ((Number) v._1()).longValue(),
-                    v._2()
-                ));
-
-            JavaRDD<Tuple2<Object, String>> remainingVerticesRDD = currentVertices
-                .join(validVertices)
+            JavaRDD<Tuple2<Object, String>> remainingVerticesRDD = current.vertices().toJavaRDD()
+                .mapToPair(v -> new Tuple2<>(((Number) v._1()).longValue(), v._2()))
+                .leftOuterJoin(validVertices)
+                .filter(t -> t._2._2.isPresent())
                 .map(t -> new Tuple2<>(t._1, t._2._1));
 
-            JavaPairRDD<Long, Edge<String>> survivingBySrc = current.edges().toJavaRDD()
+            JavaRDD<Edge<String>> remainingEdgesRDD = current.edges().toJavaRDD()
                 .mapToPair(e -> new Tuple2<>(e.srcId(), e))
-                .join(validVertices)
-                .mapToPair(t -> new Tuple2<>(t._2._1.dstId(), t._2._1));
-
-            JavaRDD<Edge<String>> remainingEdgesRDD = survivingBySrc
-                .join(validVertices)
+                .leftOuterJoin(validVertices)
+                .filter(t -> t._2._2.isPresent())
+                .mapToPair(t -> new Tuple2<>(t._2._1.dstId(), t._2._1))
+                .leftOuterJoin(validVertices)
+                .filter(t -> t._2._2.isPresent())
                 .map(t -> t._2._1);
 
             current = Graph.apply(
@@ -209,22 +204,16 @@ public class KCore {
                 .mapToPair(v -> new Tuple2<>(((Number) v._1()).longValue(), v._2()))
                 .join(memberships)
                 .filter(t -> t._2._2.equals(largestComponentId))
-                .map(t -> new Tuple2<>((Object) t._1, t._2._1));
+                .map(t -> new Tuple2<>(t._1, t._2._1));
 
-        JavaPairRDD<Long, Tuple2<Edge<String>, Long>> edgesWithSrcComp = graph.edges().toJavaRDD()
+        JavaRDD<Edge<String>> edgesRDD = graph.edges().toJavaRDD()
                 .mapToPair(e -> new Tuple2<>(e.srcId(), e))
-                .join(memberships);
-
-        JavaRDD<Edge<String>> edgesRDD = edgesWithSrcComp
-                .mapToPair(t -> new Tuple2<>(t._2._1.dstId(), new Tuple2<>(t._2._1, t._2._2)))
                 .join(memberships)
-                .filter(t -> {
-                    Tuple2<Edge<String>, Long> edgeAndSrcComp = t._2._1;
-                    Long dstComp = t._2._2;
-                    Long srcComp = edgeAndSrcComp._2;
-                    return srcComp.equals(largestComponentId) && dstComp.equals(largestComponentId);
-                })
-                .map(t -> t._2._1._1);
+                .filter(t -> t._2._2.equals(largestComponentId))
+                .mapToPair(t -> new Tuple2<>(t._2._1.dstId(), t._2._1))
+                .join(memberships)
+                .filter(t -> t._2._2.equals(largestComponentId))
+                .map(t -> t._2._1);
 
         return Graph.apply(
                 JavaRDD.toRDD(verticesRDD),
