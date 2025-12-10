@@ -152,6 +152,9 @@ public class KCore {
 
             long remaining = validVertices.count();
             if (remaining == previousRemaining) {
+                if (remaining == 0){
+                    return current;
+                }
                 break;
             }
             previousRemaining = remaining;
@@ -186,6 +189,7 @@ public class KCore {
                 STRING_TAG
             );
         }
+
 
         return largestConnectedComponent(current);
     }
